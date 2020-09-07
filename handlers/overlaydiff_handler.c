@@ -152,6 +152,8 @@ static int extract_tar_to_dir( int fd, char *dir) {
 	}
 
 	archive_write_disk_set_options(ext, flags);
+	archive_read_support_format_all(a);
+	archive_read_support_filter_all(a);
 	if ((r = archive_read_open_fd(a, fd, 4096)))
 	{
 		ERROR("archive_read_open_filename(): %s %d",
