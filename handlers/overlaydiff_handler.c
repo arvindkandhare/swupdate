@@ -1,6 +1,6 @@
 /*
  * Author: Arvind Kandhare
- * Copyright (C) 2020, Microsoft Copr
+ * Copyright (C) 2020, Microsoft Corp
  *
  * SPDX-License-Identifier:     GPL-2.0-or-later
  */
@@ -10,11 +10,14 @@
 #include <stdlib.h>
 #include <libgen.h>
 #include <errno.h>
+#include <fcntl.h>
 #include <sys/stat.h>
+#include <sys/sendfile.h>
+#include <sys/mount.h>
 #include <stdbool.h>
 #include <librsync.h>
 #if defined(__linux__)
-#include <sys/sendfile.h>
+#include <linux/loop.h>
 #endif
 #if defined(__FreeBSD__)
 #include <sys/param.h>
@@ -23,6 +26,10 @@
 #include "handler.h"
 #include "util.h"
 
+/* overlay specific constants */
+#define LOWER_DIR "lower"
+#define UPPER_DIR "upper"
+#define WORK_DIR "work"
 /* Use rdiff's default inbuf and outbuf size of 64K */
 #define RDIFF_BUFFER_SIZE 64 * 1024
 
@@ -218,37 +225,151 @@ static int apply_rdiff_chunk_cb(void *out, const void *buf, unsigned int len)
 	return 0;
 }
 
+int losetup_base_file (char *base_file_filename,char *loop_device, char *mount_dir) {
+    int control_fd, file_fd, device_fd;
+	int ret = 0;
+
+    control_fd = open("/dev/loop-control", O_RDWR);
+    if (control_fd < 0) {
+        ERROR("open loop control device failed");
+        ret = 1;
+		goto cleanup;
+    }
+
+    int loop_id = ioctl(control_fd, LOOP_CTL_GET_FREE);
+    sprintf(loop_device, "/dev/loop%d", loop_id);
+    close(control_fd);
+
+    TRACE("using loop device: %s\n", loop_device);
+
+    file_fd = open(base_file_filename, O_RDWR);
+    if (file_fd < 0) {
+        ERROR("open backing file failed");
+        ret =  1;
+		goto cleanup;
+    }
+
+    device_fd = open(loop_device, O_RDWR);
+    if (device_fd < 0) {
+        ERROR("open loop device failed");
+        close(file_fd);
+        ret =  1;
+		goto cleanup;
+    }
+
+    if (ioctl(device_fd, LOOP_SET_FD, file_fd) < 0) {
+        ERROR("ioctl LOOP_SET_FD failed");
+        close(file_fd);
+        close(device_fd);
+        ret = 1;
+		goto cleanup;
+    }
+
+    close(file_fd);
+
+    if (swupdate_mount(loop_device, mount_dir, "ext4") < 0) {
+        ERROR("mount failed");
+		ret = 1;
+	} else {
+        TRACE("mount successful\n");
+    }
+cleanup:
+    // always free loop device in the end
+    ioctl(device_fd, LOOP_CLR_FD, 0);      
+    close(device_fd);
+	return ret;
+}
+
 static int apply_overlaydiff_patch(struct img_type *img,
 							 void __attribute__((__unused__)) * data)
 {
 	int ret = 0;
 
 	struct rdiff_t rdiff_state = {};
-	rdiff_state.type =
-	    strcmp(img->type, "rdiff_image") == 0 ? IMAGE_HANDLER : FILE_HANDLER;
 
 	char *mountpoint = NULL;
+	char *lower_mountpoint = NULL;
+	char *work_dir = NULL;
+	char *upper_dir = NULL;
+	char *source_dir = NULL;
+	char *mount_options = NULL;
+
+	char loop_device[16] ={0};
+	
 	bool use_mount = (strlen(img->device) && strlen(img->filesystem)) ? true : false;
 
 	char *base_file_filename = NULL;
 	char *dest_file_filename = NULL;
 
-	if (rdiff_state.type == IMAGE_HANDLER) {
-		if (img->seek) {
-			/*
+	base_file_filename = dict_get_value(&img->properties, "overlaydiffbase");
+	if (base_file_filename == NULL)
+	{
+		ERROR("Property 'rdiffbase' is missing in sw-description.");
+		return -2;
+	}
+
+	if (img->seek)
+	{
+		/**
 			 * img->seek mandates copyfile()'s out parameter to be a fd, it
 			 * isn't. So, the seek option is invalid for the rdiff handler.
-			 * */
-			ERROR("Option 'seek' is not supported for rdiff.");
-			return -1;
-		}
+			 **/
+		ERROR("Option 'seek' is not supported for rdiff.");
+		return -1;
+	}
 
-		base_file_filename = dict_get_value(&img->properties, "rdiffbase");
-		if (base_file_filename == NULL) {
-			ERROR("Property 'rdiffbase' is missing in sw-description.");
-			return -1;
-		}
+	if (use_mount)
+	{
+		mountpoint = alloca(strlen(get_tmpdir()) + strlen(DATADST_DIR_SUFFIX) + 1);
+		sprintf(mountpoint, "%s%s", get_tmpdir(), DATADST_DIR_SUFFIX);
 
+		if (swupdate_mount(img->device, mountpoint, img->filesystem) != 0)
+		{
+			ERROR("Device %s with filesystem %s cannot be mounted",
+				  img->device, img->filesystem);
+			ret = -1;
+			goto cleanup;
+		}
+	}
+	else
+	{
+		/* TODO: Throw error  */
+		ret = -1;
+		goto cleanup;
+	}
+
+	upper_dir = alloca(strlen(get_tmpdir()) + strlen(UPPER_DIR) + 1);
+	//TODO: Make upper_dir
+	//TODO: Extract the tar in upper dir
+	sprintf(upper_dir, "%s%s", get_tmpdir(), UPPER_DIR);
+
+	lower_mountpoint = alloca(strlen(get_tmpdir()) + strlen(LOWER_DIR) + 1);
+	//TODO: Make lowerdir
+	sprintf(lower_mountpoint, "%s%s", get_tmpdir(), LOWER_DIR);
+	ret = losetup_base_file(base_file_filename, loop_device, lower_mountpoint);	
+
+	
+
+	work_dir = alloca(strlen(get_tmpdir()) + strlen(WORK_DIR) + 1);
+	//TODO: Make work_dir
+	sprintf(work_dir, "%s%s", get_tmpdir(), WORK_DIR);
+
+	mount_options = alloca( strlen("lowerdir=") +
+		strlen(lower_mountpoint) + 
+		strlen(",upperdir=") +
+		strlen(upper_dir) +
+		strlen(",workdir=") +
+		strlen(work_dir));
+		sprintf(mount_options, "lowerdir=%s,upperdir=%s,workdir=%s",
+		lower_mountpoint,
+		upper_dir,
+		work_dir);
+
+	mount("/dev/null", source_dir, "overlay", 0, mount_options);
+
+	if (rdiff_state.type == IMAGE_HANDLER) {
+
+	
 		if ((rdiff_state.dest_file = fopen(img->device, "wb+")) == NULL) {
 			ERROR("%s cannot be opened for writing: %s", img->device, strerror(errno));
 			return -1;
@@ -280,20 +401,6 @@ static int apply_overlaydiff_patch(struct img_type *img,
 		}
 
 		base_file_filename = img->path;
-		if (use_mount) {
-			mountpoint = alloca(strlen(get_tmpdir()) + strlen(DATADST_DIR_SUFFIX) + 1);
-			sprintf(mountpoint, "%s%s", get_tmpdir(), DATADST_DIR_SUFFIX);
-
-			if (swupdate_mount(img->device, mountpoint, img->filesystem) != 0) {
-				ERROR("Device %s with filesystem %s cannot be mounted",
-					  img->device, img->filesystem);
-				ret = -1;
-				goto cleanup;
-			}
-
-			base_file_filename = alloca(strlen(mountpoint) + strlen(img->path) + 1);
-			sprintf(base_file_filename, "%s%s", mountpoint, img->path);
-		}
 
 		char* make_path = dict_get_value(&img->properties, "create-destination");
 		if (make_path != NULL && strcmp(make_path, "true") == 0) {
@@ -440,10 +547,4 @@ __attribute__((constructor))
 void overlaydiff_image_handler(void)
 {
 	register_handler("overlaydiff_image", apply_overlaydiff_patch, IMAGE_HANDLER, NULL);
-}
-
-__attribute__((constructor))
-void overlaydiff_file_handler(void)
-{
-	register_handler("overlaydiff_file", apply_overlaydiff_patch, FILE_HANDLER, NULL);
 }
