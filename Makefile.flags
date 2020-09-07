@@ -140,6 +140,11 @@ ifeq ($(CONFIG_ARCHIVE),y)
 LDLIBS += archive
 endif
 
+# libarchive
+ifeq ($(CONFIG_OVERLAYDIFFHANDLER),y)
+LDLIBS += archive
+endif
+
 # json-c
 ifeq ($(CONFIG_JSON),y)
 LDLIBS += json-c
