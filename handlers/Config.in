@@ -116,6 +116,12 @@ config RDIFFHANDLER
 	  Add support for applying librsync's rdiff patches,
 	  see http://librsync.sourcefrog.net/
 
+config OVERLAYDIFFHANDLER
+	bool "overlaydiff"
+	default n
+	help
+	  Add support for applying overlay mount based patches.
+
 config READBACKHANDLER
 	bool "readback"
 	depends on HASH_VERIFY

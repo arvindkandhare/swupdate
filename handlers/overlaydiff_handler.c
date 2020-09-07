@@ -1,6 +1,6 @@
 /*
- * Author: Christian Storm
- * Copyright (C) 2018, Siemens AG
+ * Author: Arvind Kandhare
+ * Copyright (C) 2020, Microsoft Copr
  *
  * SPDX-License-Identifier:     GPL-2.0-or-later
  */
@@ -33,8 +33,8 @@
 		return failret; \
 	}
 
-void rdiff_file_handler(void);
-void rdiff_image_handler(void);
+void overlaydiff_file_handler(void);
+void overlaydiff_image_handler(void);
 
 struct rdiff_t
 {
@@ -218,7 +218,7 @@ static int apply_rdiff_chunk_cb(void *out, const void *buf, unsigned int len)
 	return 0;
 }
 
-static int apply_rdiff_patch(struct img_type *img,
+static int apply_overlaydiff_patch(struct img_type *img,
 							 void __attribute__((__unused__)) * data)
 {
 	int ret = 0;
@@ -437,13 +437,13 @@ cleanup:
 }
 
 __attribute__((constructor))
-void rdiff_image_handler(void)
+void overlaydiff_image_handler(void)
 {
-	register_handler("rdiff_image", apply_rdiff_patch, IMAGE_HANDLER, NULL);
+	register_handler("overlaydiff_image", apply_overlaydiff_patch, IMAGE_HANDLER, NULL);
 }
 
 __attribute__((constructor))
-void rdiff_file_handler(void)
+void overlaydiff_file_handler(void)
 {
-	register_handler("rdiff_file", apply_rdiff_patch, FILE_HANDLER, NULL);
+	register_handler("overlaydiff_file", apply_overlaydiff_patch, FILE_HANDLER, NULL);
 }
