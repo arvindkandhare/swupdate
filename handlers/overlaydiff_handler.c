@@ -326,8 +326,8 @@ static int apply_overlaydiff_patch(struct img_type *img,
 	rsync_cmd = alloca( strlen("rsync -avlz ")
 					+ strlen(source_dir)
 					+strlen(mountpoint)
-					+3);
-					sprintf(rsync_cmd, "rsync -avlz %s %s", source_dir, mountpoint);
+					+30);
+					sprintf(rsync_cmd, "rsync -avlz %s/ %s/", source_dir, mountpoint);
 
 	ret = system(rsync_cmd);
 
